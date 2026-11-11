@@ -1,0 +1,47 @@
+# Keeps only the newest Scolyer release downloadable.
+#
+# Runs when a release is published (drafts never trigger it) and deletes every release
+# published before it, with its tag. A stable release removes all older releases, betas
+# included; a beta removes only older betas, so the stable version the website links to and
+# that non-beta users update from always stays. Installed copies only need the newest
+# release to update; a copy several versions behind downloads the full installer instead
+# of just the changed parts.
+#
+# No actions and no secrets: only the gh CLI that ships on the runner, and this repository's
+# own token, allowed to write releases here and nothing else.
+name: Remove older releases
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: prune-releases
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # delete releases and their tags in this repository
+    steps:
+      - name: Delete releases published before this one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: ${{ github.event.release.tag_name }}
+          CUTOFF: ${{ github.event.release.published_at }}
+          IS_BETA: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .published_at < env.CUTOFF) | [.tag_name, (.prerelease | tostring)] | @tsv' |
+          while IFS=$'\t' read -r tag beta; do
+            [ "$tag" = "$KEEP" ] && continue
+            # A beta never removes a stable release.
+            if [ "$IS_BETA" = "true" ] && [ "$beta" != "true" ]; then continue; fi
+            echo "Deleting $tag"
+            gh release delete "$tag" --repo "$REPO" --yes --cleanup-tag
+          done
